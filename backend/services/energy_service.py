@@ -18,25 +18,24 @@ class EnergyService:
 
     async def save_energy_data(self, device_id: str, energy_data: dict) -> dict:
         """
-        Save energy reading from ESP32 with deterministic calculation
+        Save energy reading from ESP32.
+        Uses the actual sensor values sent by the hardware (current, voltage,
+        power from SCT-013, and temperature/humidity from DHT22).
         """
-        # 1. Deterministic power calculation based on state
         device = await self.db.devices.find_one({"_id": ObjectId(device_id)})
-        is_relay_on = device.get("is_relay_on", False) if device else False
-        
-        voltage = 220.0
-        pf = 0.9
-        relay_current = 0.8 if is_relay_on else 0.0
-        calculated_power = voltage * relay_current * pf
-        
+
+        # Use real sensor values from ESP32; fall back to defaults if missing
+        current = energy_data.get("current", 0.0)
+        voltage = energy_data.get("voltage", 220.0)
+        power = energy_data.get("power", 0.0)
         temp = energy_data.get("temperature", 0.0)
         humidity = energy_data.get("humidity", 0.0)
-        
+
         doc = {
             "device_id": ObjectId(device_id),
-            "current": relay_current,
+            "current": current,
             "voltage": voltage,
-            "power": calculated_power,
+            "power": power,
             "temperature": temp,
             "humidity": humidity,
             "is_anomaly": False,

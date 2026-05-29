@@ -1,15 +1,17 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { ChatMessage } from '../types';
+import { predictionsAPI } from '../services/api';
+import authService from '../services/auth';
 
 const WELCOME_MESSAGE: ChatMessage = {
   id: 'welcome',
   sender: 'bot',
-  text: "Hello! I'm your energy assistant. I can help you understand your power consumption, save money on bills, and optimize your device usage.",
+  text: "Hello! I'm your energy assistant powered by Reinforcement Learning. I can help you understand your power consumption, save money on bills, and optimize your device usage. Try asking about costs, forecasts, or how to save energy.",
 };
 
 const SAVING_SUGGESTIONS = [
   'Schedule high-power devices like AC and heaters to run during off-peak hours to reduce costs.',
-  'Setting your AC to 25°C with a fan uses less energy than running it at 20°C alone.',
+  'Setting your AC to 25C with a fan uses less energy than running it at 20C alone.',
   'Unplug devices when not in use. Standby mode still consumes 20-50 watts of power.',
   'Run washing machines and dryers in the evening when electricity rates are lower.',
   'Clean your AC filters regularly to maintain efficiency and reduce power consumption.',
@@ -17,7 +19,7 @@ const SAVING_SUGGESTIONS = [
 
 const waitForResponse = (delay: number) => new Promise((resolve) => setTimeout(resolve, delay));
 
-const generateAnswer = (userQuestion: string, previousMessages: ChatMessage[]): string => {
+const generateLocalAnswer = (userQuestion: string, previousMessages: ChatMessage[]): string => {
   const questionLower = userQuestion.toLowerCase();
 
   if (questionLower.includes('cost') || questionLower.includes('price') || questionLower.includes('bill')) {
@@ -87,25 +89,42 @@ const useChatAssistant = () => {
       setProcessing(true);
 
       try {
-        await waitForResponse(700);
+        let botReply: string;
+
+        // Try backend AI first
+        if (authService.isAuthenticated()) {
+          try {
+            const result = await predictionsAPI.getSmartAnalysis(trimmedInput);
+            if (result && result.response) {
+              botReply = result.response;
+            } else {
+              throw new Error('Empty response');
+            }
+          } catch {
+            // Fallback to local
+            await waitForResponse(500);
+            botReply = generateLocalAnswer(trimmedInput, chatHistory);
+          }
+        } else {
+          await waitForResponse(700);
+          botReply = generateLocalAnswer(trimmedInput, chatHistory);
+        }
+
         if (!isMounted.current) return;
 
-        setChatHistory((oldHistory) => {
-          const botReply = generateAnswer(trimmedInput, oldHistory);
-          const newBotMsg: ChatMessage = {
-            id: `${Date.now() + 1}`,
-            sender: 'bot',
-            text: botReply,
-          };
-          return [...oldHistory, newBotMsg];
-        });
+        const newBotMsg: ChatMessage = {
+          id: `${Date.now() + 1}`,
+          sender: 'bot',
+          text: botReply,
+        };
+        setChatHistory((oldHistory) => [...oldHistory, newBotMsg]);
       } finally {
         if (isMounted.current) {
           setProcessing(false);
         }
       }
     },
-    [processing]
+    [processing, chatHistory]
   );
 
   return {
@@ -116,3 +135,4 @@ const useChatAssistant = () => {
 };
 
 export default useChatAssistant;
+

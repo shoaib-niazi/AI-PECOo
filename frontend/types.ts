@@ -84,3 +84,42 @@ export interface BackendDevice {
   relay_pin: number;
   created_at: string;
 }
+
+export interface ForecastResult {
+  predicted_power_kw: number;
+  method: string;
+  confidence: string;
+  message: string;
+}
+
+export interface DisaggregationResult {
+  breakdown: Record<string, number>;
+  method: string;
+  confidence: string;
+  message: string;
+}
+
+export interface RLSuggestion {
+  action: string;
+  title: string;
+  description: string;
+  estimated_savings_pkr: number;
+  confidence: string;
+  source: string;
+  episodes_trained: number;
+  current_state_summary?: {
+    hour: number;
+    total_power_watts: number;
+    avg_temperature: number;
+    devices_on: number;
+    total_devices: number;
+  };
+}
+
+export interface SmartAnalysisResult {
+  query: string;
+  response: string;
+  rl_suggestion: RLSuggestion;
+  data_points_analyzed: number;
+}
+

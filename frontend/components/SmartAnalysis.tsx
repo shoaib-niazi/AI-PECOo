@@ -2,6 +2,8 @@
 import React, { useState } from 'react';
 import { DataPoint } from '../types';
 import { SparklesIcon } from './Icons';
+import { predictionsAPI } from '../services/api';
+import authService from '../services/auth';
 
 interface SmartAnalysisProps {
   consumptionHistory: DataPoint[];
@@ -12,6 +14,7 @@ const SmartAnalysis: React.FC<SmartAnalysisProps> = ({ consumptionHistory }) => 
   const [response, setResponse] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [dataSource, setDataSource] = useState<'backend' | 'local' | ''>('');
 
   const calculateStats = (dataPoints: DataPoint[]) => {
     const last24Points = dataPoints.slice(-24);
@@ -31,7 +34,7 @@ const SmartAnalysis: React.FC<SmartAnalysisProps> = ({ consumptionHistory }) => 
     return { total: sumPower, average: avgPower, peak: highestPoint, lowest: lowestPoint };
   };
 
-  const buildResponse = (question: string, history: DataPoint[]) => {
+  const buildLocalResponse = (question: string, history: DataPoint[]) => {
     if (!history.length) {
       return 'There is no data available yet. Please wait a few minutes for data to be collected and try again.';
     }
@@ -64,9 +67,28 @@ const SmartAnalysis: React.FC<SmartAnalysisProps> = ({ consumptionHistory }) => 
     setIsLoading(true);
     setError('');
     setResponse('');
+    setDataSource('');
+
+    // Try backend first
+    if (authService.isAuthenticated()) {
+      try {
+        const result = await predictionsAPI.getSmartAnalysis(query);
+        if (result && result.response) {
+          setResponse(result.response);
+          setDataSource('backend');
+          setIsLoading(false);
+          return;
+        }
+      } catch (err) {
+        console.warn('Backend smart analysis unavailable, falling back to local:', err);
+      }
+    }
+
+    // Fallback to local analysis
     await new Promise((resolve) => setTimeout(resolve, 800));
-    const result = buildResponse(query, consumptionHistory);
+    const result = buildLocalResponse(query, consumptionHistory);
     setResponse(result);
+    setDataSource('local');
     setIsLoading(false);
   };
 
@@ -76,6 +98,13 @@ const SmartAnalysis: React.FC<SmartAnalysisProps> = ({ consumptionHistory }) => 
       if (line.startsWith('### ')) return <h3 key={index} className="text-lg font-semibold mt-4 mb-2">{line.substring(4)}</h3>
       if (line.startsWith('## ')) return <h2 key={index} className="text-xl font-bold mt-4 mb-2">{line.substring(3)}</h2>
       if (line.startsWith('# ')) return <h1 key={index} className="text-2xl font-bold mt-4 mb-2">{line.substring(2)}</h1>
+      if (line.startsWith('- **')) {
+        const match = line.match(/^- \*\*(.+?)\*\*:?\s*(.*)/);
+        if (match) {
+          return <li key={index} className="ml-6 list-disc"><strong>{match[1]}</strong>{match[2] ? `: ${match[2]}` : ''}</li>
+        }
+      }
+      if (line.startsWith('- ')) return <li key={index} className="ml-6 list-disc">{line.substring(2)}</li>
       if (line.startsWith('* ')) return <li key={index} className="ml-6 list-disc">{line.substring(2)}</li>
       if (line.trim() === '') return <br key={index} />
       return <p key={index} className="my-1">{line}</p>
@@ -90,13 +119,14 @@ const SmartAnalysis: React.FC<SmartAnalysisProps> = ({ consumptionHistory }) => 
         </div>
         <h3 className="text-xl font-semibold ml-2 text-white font-mono uppercase tracking-tighter">AI <span className="text-emerald-500">CORE</span></h3>
       </div>
-      <p className="text-zinc-500 mb-6 text-[10px] font-mono uppercase tracking-[0.2em]">Diagnostic interface and consumption analysis.</p>
+      <p className="text-zinc-500 mb-6 text-[10px] font-mono uppercase tracking-[0.2em]">Diagnostic interface and consumption analysis. Powered by Reinforcement Learning.</p>
       
       <div className="flex flex-col md:flex-row gap-3">
         <input
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleAnalysis()}
           placeholder="ENTER_QUERY..."
           className="flex-grow bg-black border border-zinc-800 rounded px-4 py-2 text-emerald-500 placeholder-zinc-800 focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none transition-all font-mono text-xs"
           disabled={isLoading}
@@ -117,8 +147,13 @@ const SmartAnalysis: React.FC<SmartAnalysisProps> = ({ consumptionHistory }) => 
            <div className="prose prose-sm max-w-none text-zinc-300 font-sans leading-relaxed">
               {renderResponse(response)}
            </div>
-           <div className="mt-4 pt-4 border-t border-zinc-900 text-[9px] font-mono text-zinc-700 uppercase tracking-widest">
-             CORE_REPORT_GEN_AUTO
+           <div className="mt-4 pt-4 border-t border-zinc-900 flex items-center justify-between text-[9px] font-mono text-zinc-700 uppercase tracking-widest">
+             <span>CORE_REPORT_GEN_AUTO</span>
+             {dataSource && (
+               <span className={dataSource === 'backend' ? 'text-cyan-600' : 'text-zinc-600'}>
+                 SRC: {dataSource === 'backend' ? 'AI_BACKEND' : 'LOCAL_ANALYSIS'}
+               </span>
+             )}
            </div>
         </div>
       )}

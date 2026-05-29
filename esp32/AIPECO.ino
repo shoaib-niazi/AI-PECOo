@@ -1,139 +1,355 @@
+#include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <DHT.h>
+#include <math.h>
 #include <ArduinoJson.h>
 
-// configuration
-const char* ssid = "Infinix NOTE";
-const char* password = "hahahaha";
+// =============================================================
+//  AI-PECOo — ESP32 Firmware v2.0
+//  AI-Powered Energy Consumption Optimizer
+//
+//  WIRING (unchanged from your hardware setup):
+//    SCT-013 Current Sensor  → GPIO 34 (analog)
+//    DHT22 Data              → GPIO 4
+//    Relay IN1               → GPIO 14
+//    Relay IN2               → GPIO 27
+//    Relay IN3               → GPIO 26
+//    Relay IN4               → GPIO 25
+//    All relays are ACTIVE LOW (LOW = ON, HIGH = OFF)
+// =============================================================
 
-const char* backendUrl = "http://192.168.X.X:8000"; // REPLACE '192.168.X.X' with your PC's local IP address where the backend is running
+// ===== PIN DEFINITIONS (DO NOT CHANGE — matches physical wiring) =====
+#define SCT_PIN   34
+#define IN1       14
+#define IN2       27
+#define IN3       26
+#define IN4       25
+#define DHTPIN     4
 
-// pins
-#define DHTPIN 26
-#define RELAY1 18
-#define RELAY2 19
-#define RELAY3 21
-#define RELAY4 22
-
+// ===== DHT SETUP =====
 #define DHTTYPE DHT22
 DHT dht(DHTPIN, DHTTYPE);
 
-// state
-unsigned long lastPost = 0;
-unsigned long lastPoll = 0;
-int currentPollIndex = 0;
+// ===== WIFI SETTINGS =====
+const char* ssid     = "Mcki's_Abyss";
+const char* password = "@hackers.net";
 
-void setup() {
-  Serial.begin(115200);
-  pinMode(RELAY1, OUTPUT);
-  pinMode(RELAY2, OUTPUT);
-  pinMode(RELAY3, OUTPUT);
-  pinMode(RELAY4, OUTPUT);
+// ===== BACKEND SERVER =====
+// Change this to your PC's IP where the FastAPI backend runs on port 8000.
+// Find it with: ipconfig (Windows) or ifconfig (Linux/Mac)
+String serverBase = "http://10.105.221.55:8000";
 
-  connectWiFi();
-  dht.begin();
+// ===== DEVICE API KEY =====
+// Matches DEVICE_API_KEY in backend/.env
+// Only needed when DEBUG=false in backend. Currently DEBUG=true so this
+// is sent but not enforced.
+String deviceApiKey = "esp32_default_key";
+
+// ===== DEVICE IDs =====
+// These are the MongoDB ObjectId strings for your 4 devices.
+// After starting the backend, check console logs or the dashboard
+// to get the actual device IDs, then paste them here.
+//
+// The backend's demo seeder auto-creates 4 devices. To find their IDs:
+//   1. Start the backend: python main.py
+//   2. Login at the dashboard as admin@aipeco.com / admin123
+//   3. Go to Devices page — each device shows its ID
+//   4. Or call: GET http://<your-ip>:8000/api/devices (with JWT token)
+//
+// For now, these map to:
+//   device1 → Relay IN1 (GPIO 14) — e.g. "Living Room AC"
+//   device2 → Relay IN2 (GPIO 27) — e.g. "Kitchen Appliances"
+//   device3 → Relay IN3 (GPIO 26) — e.g. "Water Heater"
+//   device4 → Relay IN4 (GPIO 25) — e.g. "Bedroom Fan"
+//
+// IMPORTANT: Replace these placeholder strings with actual MongoDB ObjectIds!
+String deviceIds[] = {
+  "device1",   // → IN1 (GPIO 14)
+  "device2",   // → IN2 (GPIO 27)
+  "device3",   // → IN3 (GPIO 26)
+  "device4",   // → IN4 (GPIO 25)
+};
+
+// Map device index → relay GPIO pin
+const int RELAY_PINS[] = { IN1, IN2, IN3, IN4 };
+const int NUM_DEVICES  = 4;
+
+// ===== CONSTANTS =====
+const float VREF          = 3.3;
+const int   ADC_RES       = 4095;
+const float CURRENT_RATIO = 60.0;
+const float VOLTAGE       = 220.0;
+
+// ===== CURRENT SPIKE DETECTION =====
+float lastCurrent    = 0;
+float spikeThreshold = 0.5;   // Amps — adjust based on testing
+
+// ===== TIMING =====
+unsigned long lastSensorSend    = 0;
+unsigned long lastCommandPoll   = 0;
+const unsigned long SENSOR_INTERVAL  = 5000;   // Send sensor data every 5 s
+const unsigned long COMMAND_INTERVAL = 1500;   // Poll relay commands every 1.5 s
+
+// Which device index to poll next (cycles 0→1→2→3→0→...)
+int pollIndex = 0;
+
+// =====================================================================
+//  FUNCTION: Read RMS current from SCT-013
+// =====================================================================
+float getCurrent() {
+  float sum = 0;
+
+  for (int i = 0; i < 400; i++) {
+    int adc = analogRead(SCT_PIN);
+    float voltage = (adc / (float)ADC_RES) * VREF;
+    float centered = voltage - (VREF / 2.0);
+    sum += centered * centered;
+  }
+
+  float rms = sqrt(sum / 400.0);
+  return rms * CURRENT_RATIO;
 }
 
-void loop() {
-  if (WiFi.status() != WL_CONNECTED) {
-    connectWiFi();
-  }
-
-  unsigned long now = millis();
-  
-  // Non-blocking JSON POST every 5 seconds
-  if (now - lastPost >= 5000) {
-    sendSensorData();
-    lastPost = now;
-  }
-
-  // Non-blocking POLL (poll 1 device every 1.5 seconds to avoid blocking the main loop too long)
-  if (now - lastPoll >= 1500) {
-    pollNextDeviceCommand();
-    lastPoll = now;
-  }
-
-  delay(50);
-}
-
+// =====================================================================
+//  FUNCTION: Connect to WiFi
+// =====================================================================
 void connectWiFi() {
-  Serial.print("Connecting to WiFi");
+  Serial.print("[WIFI] Connecting");
   WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
+
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 40) {
     delay(500);
     Serial.print(".");
+    attempts++;
   }
-  Serial.println(" connected");
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println(" Connected!");
+    Serial.print("[WIFI] IP: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println(" FAILED — will retry in loop.");
+  }
 }
 
-void sendSensorData() {
-  float temperature = dht.readTemperature();
-  float humidity = dht.readHumidity();
-  
-  if (isnan(temperature) || isnan(humidity)) {
-    Serial.println("Failed to read from DHT sensor!");
-    // Defaulting to 0 for fallback instead of returning
-    temperature = 0;
-    humidity = 0;
-  }
+// =====================================================================
+//  FUNCTION: POST sensor data to /api/energy/data
+//
+//  The backend expects:
+//    { device_id, current, voltage, power, temperature, humidity }
+//
+//  NOTE: The backend currently overrides current/voltage/power with
+//  its own deterministic calculation based on relay state. But we
+//  still send the real sensor values for logging and future use.
+// =====================================================================
+void sendSensorData(String deviceId, float temp, float hum, float current, float power) {
+  if (WiFi.status() != WL_CONNECTED) return;
 
-  // Payload structure for the deterministic backend calculation
-  StaticJsonDocument<200> doc;
-  doc["device_id"] = "device1"; // Primary device representing the system (for Temp/Hum)
-  doc["current"] = 0;  // Backend does deterministic calculation based on relay states
-  doc["voltage"] = 220.0;
-  doc["power"] = 0;
-  doc["temperature"] = temperature;
-  doc["humidity"] = humidity;
+  HTTPClient http;
+  String url = serverBase + "/api/energy/data";
+
+  http.begin(url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-API-Key", deviceApiKey);
+
+  // Build JSON payload matching EnergyDataCreate schema
+  StaticJsonDocument<256> doc;
+  doc["device_id"]    = deviceId;
+  doc["current"]      = current;
+  doc["voltage"]      = VOLTAGE;
+  doc["power"]        = power;
+  doc["temperature"]  = temp;
+  doc["humidity"]     = hum;
 
   String payload;
   serializeJson(doc, payload);
 
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    http.begin(String(backendUrl) + "/api/energy/data");
-    http.addHeader("Content-Type", "application/json");
+  int httpCode = http.POST(payload);
 
-    int httpResponseCode = http.POST(payload);
-    if (httpResponseCode > 0) {
-      String resp = http.getString();
-      Serial.println("Posted sensor data: " + resp);
-    } else {
-      Serial.println("Error posting data: " + String(httpResponseCode));
-    }
-    http.end();
+  if (httpCode == 200 || httpCode == 201) {
+    Serial.printf("[DATA] %s → %d OK\n", deviceId.c_str(), httpCode);
+  } else if (httpCode > 0) {
+    Serial.printf("[DATA] %s → %d\n", deviceId.c_str(), httpCode);
+  } else {
+    Serial.printf("[DATA] %s → ERROR: %s\n",
+                  deviceId.c_str(), http.errorToString(httpCode).c_str());
   }
+
+  http.end();
 }
 
-void pollNextDeviceCommand() {
+// =====================================================================
+//  FUNCTION: Poll relay command for ONE device
+//  GET /api/dashboard/device-command/{device_id}
+//
+//  Returns: { device_id, command: "ON"/"OFF", relay_pin }
+//  No authentication required on this endpoint.
+//
+//  We cycle through devices one at a time to spread the load.
+// =====================================================================
+void pollDeviceCommand(int deviceIndex) {
   if (WiFi.status() != WL_CONNECTED) return;
-  
-  String devices[4] = {"device1", "device2", "device3", "device4"};
-  int relayPins[4] = {RELAY1, RELAY2, RELAY3, RELAY4};
-  
-  String currentDeviceId = devices[currentPollIndex];
-  int currentRelayPin = relayPins[currentPollIndex];
+  if (deviceIndex < 0 || deviceIndex >= NUM_DEVICES) return;
 
   HTTPClient http;
-  http.begin(String(backendUrl) + "/api/dashboard/device-command/" + currentDeviceId);
-  int code = http.GET();
-  
-  if (code == HTTP_CODE_OK) {
-    String resp = http.getString();
-    StaticJsonDocument<200> doc;
-    DeserializationError err = deserializeJson(doc, resp);
+  String url = serverBase + "/api/dashboard/device-command/" + deviceIds[deviceIndex];
+
+  http.begin(url);
+  int httpCode = http.GET();
+
+  if (httpCode == 200) {
+    String response = http.getString();
+
+    StaticJsonDocument<256> doc;
+    DeserializationError err = deserializeJson(doc, response);
+
     if (!err) {
-      const char* command = doc["command"]; // "ON" or "OFF"
+      const char* command = doc["command"];
+      int relayPin = RELAY_PINS[deviceIndex];
+
+      // ACTIVE LOW logic:
+      //   "ON"  → relay energized → pin LOW
+      //   "OFF" → relay off       → pin HIGH
       if (strcmp(command, "ON") == 0) {
-        digitalWrite(currentRelayPin, HIGH);
+        digitalWrite(relayPin, LOW);
       } else {
-        digitalWrite(currentRelayPin, LOW);
+        digitalWrite(relayPin, HIGH);
       }
+
+      Serial.printf("[RELAY] Device %d (pin %d) → %s\n",
+                    deviceIndex + 1, relayPin, command);
+    }
+  } else if (httpCode == 404) {
+    // Device not found in backend — ignore silently
+    // This happens when device IDs haven't been configured yet
+  } else if (httpCode > 0) {
+    Serial.printf("[RELAY] Device %d → HTTP %d\n", deviceIndex + 1, httpCode);
+  } else {
+    Serial.printf("[RELAY] Device %d → ERROR: %s\n",
+                  deviceIndex + 1, http.errorToString(httpCode).c_str());
+  }
+
+  http.end();
+}
+
+// =====================================================================
+//  SETUP
+// =====================================================================
+void setup() {
+  Serial.begin(115200);
+  delay(100);
+
+  Serial.println("\n========================================");
+  Serial.println("  AI-PECOo  —  ESP32 Firmware v2.0");
+  Serial.println("  Energy Consumption Optimizer");
+  Serial.println("========================================");
+  Serial.println();
+
+  // Initialize DHT sensor
+  dht.begin();
+
+  // Initialize relay pins as OUTPUT
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+
+  // ACTIVE LOW — all relays OFF at startup
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, HIGH);
+
+  // ADC configuration for SCT-013 current sensor
+  analogReadResolution(12);
+  analogSetAttenuation(ADC_11db);
+
+  // Connect to WiFi
+  connectWiFi();
+
+  Serial.println("[SETUP] Pin mapping:");
+  Serial.println("  IN1 (GPIO 14) → Device 1");
+  Serial.println("  IN2 (GPIO 27) → Device 2");
+  Serial.println("  IN3 (GPIO 26) → Device 3");
+  Serial.println("  IN4 (GPIO 25) → Device 4");
+  Serial.println();
+  Serial.printf("[SETUP] Server: %s\n", serverBase.c_str());
+  Serial.println("[SETUP] Ready — entering main loop...\n");
+}
+
+// =====================================================================
+//  LOOP
+// =====================================================================
+void loop() {
+  unsigned long now = millis();
+
+  // ── Reconnect WiFi if dropped ──
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[WIFI] Disconnected — reconnecting...");
+    connectWiFi();
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  SENSOR DATA — Read & send every SENSOR_INTERVAL (5 seconds)
+  // ══════════════════════════════════════════════════════════════
+  if (now - lastSensorSend >= SENSOR_INTERVAL) {
+    lastSensorSend = now;
+
+    // Read DHT22
+    float temp = dht.readTemperature();
+    float hum  = dht.readHumidity();
+
+    if (isnan(temp) || isnan(hum)) {
+      Serial.println("[DHT] Read error — skipping this cycle.");
+    } else {
+      // Read SCT-013 current sensor
+      float current = getCurrent();
+      float power   = current * VOLTAGE;
+
+      // Serial output
+      Serial.println("────────────────────────────────────");
+      Serial.printf("  Temp:    %.1f °C\n", temp);
+      Serial.printf("  Hum:     %.1f %%\n", hum);
+      Serial.printf("  Current: %.2f A\n", current);
+      Serial.printf("  Power:   %.1f W\n", power);
+      Serial.println("────────────────────────────────────");
+
+      // Send data for EACH device (all share the same physical sensors)
+      // The backend stores data per-device for analytics and anomaly detection.
+      for (int i = 0; i < NUM_DEVICES; i++) {
+        sendSensorData(deviceIds[i], temp, hum, current, power);
+      }
+
+      // Track current for spike detection (local awareness)
+      float delta = current - lastCurrent;
+      if (delta > spikeThreshold) {
+        Serial.printf("[ALERT] ⚡ Current spike: +%.2fA (%.2fA → %.2fA)\n",
+                      delta, lastCurrent, current);
+      }
+      lastCurrent = current;
     }
   }
-  http.end();
 
-  // Cycle to next device for the next poll
-  currentPollIndex = (currentPollIndex + 1) % 4;
+  // ══════════════════════════════════════════════════════════════
+  //  RELAY COMMANDS — Poll one device per cycle (every 1.5 sec)
+  //  Cycles through device1 → device2 → device3 → device4 → ...
+  //
+  //  When a user toggles a relay on the web dashboard:
+  //    Dashboard → POST /api/dashboard/relay/{id} → sets is_relay_on
+  //    ESP32 polls GET /api/dashboard/device-command/{id} → gets ON/OFF
+  //    ESP32 sets GPIO pin accordingly
+  // ══════════════════════════════════════════════════════════════
+  if (now - lastCommandPoll >= COMMAND_INTERVAL) {
+    lastCommandPoll = now;
+
+    pollDeviceCommand(pollIndex);
+
+    // Advance to next device
+    pollIndex = (pollIndex + 1) % NUM_DEVICES;
+  }
+
+  // Small yield to prevent watchdog reset
+  delay(10);
 }

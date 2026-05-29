@@ -117,6 +117,21 @@ export const billingAPI = {
   estimate: (data: any) => apiCall("/api/billing/estimate", "POST", data),
 };
 
+// ==================== Predictions / AI ====================
+export const predictionsAPI = {
+  getForecast: (deviceId: string) =>
+    apiCall(`/api/predictions/forecast/${deviceId}`, "GET"),
+
+  getDisaggregation: (deviceId: string) =>
+    apiCall(`/api/predictions/disaggregate/${deviceId}`, "GET"),
+
+  getRLSuggestion: () =>
+    apiCall("/api/predictions/rl-suggestion", "GET"),
+
+  getSmartAnalysis: (query: string) =>
+    apiCall(`/api/predictions/smart-analysis?q=${encodeURIComponent(query)}`, "GET"),
+};
+
 // ==================== Health Check ====================
 export const healthAPI = {
   check: () =>
@@ -132,6 +147,7 @@ const apiClient = {
   energy: energyAPI,
   dashboard: dashboardAPI,
   billing: billingAPI,
+  predictions: predictionsAPI,
   health: healthAPI,
 };
 

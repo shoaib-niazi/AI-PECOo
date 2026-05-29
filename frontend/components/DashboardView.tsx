@@ -9,10 +9,10 @@ import DeviceStatusList from './DeviceStatusList';
 import NotificationToast from './NotificationToast';
 import useDeviceNotifications from '../hooks/useDeviceNotifications';
 import FutureForecastChart from './FutureForecastChart';
-import { dashboardAPI } from '../services/api';
+import { dashboardAPI, predictionsAPI } from '../services/api';
 import authService from '../services/auth';
 import { USE_DEMO_DATA } from '../demoConfig';
-import type { DashboardStatsSummary } from '../types';
+import type { DashboardStatsSummary, RLSuggestion, Recommendation } from '../types';
 
 const DashboardView: React.FC = () => {
   const isDemoMode = USE_DEMO_DATA;
@@ -21,6 +21,8 @@ const DashboardView: React.FC = () => {
 
   const [backendStats, setBackendStats] = useState<DashboardStatsSummary | null>(null);
   const [statsError, setStatsError] = useState<string | null>(null);
+  const [rlSuggestion, setRlSuggestion] = useState<RLSuggestion | null>(null);
+  const [aiRecommendations, setAiRecommendations] = useState<Recommendation[]>([]);
 
   useEffect(() => {
     let isMounted = true;
@@ -42,10 +44,38 @@ const DashboardView: React.FC = () => {
       }
     };
 
+    const fetchRLSuggestion = async () => {
+      if (!authService.isAuthenticated()) return;
+      try {
+        const suggestion = await predictionsAPI.getRLSuggestion();
+        if (isMounted && suggestion) {
+          setRlSuggestion(suggestion);
+          // Convert RL suggestion to Recommendation format
+          const rlRec: Recommendation = {
+            id: 'rl-' + suggestion.action,
+            title: suggestion.title,
+            description: suggestion.description,
+            estimatedSavings: `PKR ${suggestion.estimated_savings_pkr}/month`,
+          };
+          setAiRecommendations([rlRec]);
+        }
+      } catch (error) {
+        console.error('Failed to load RL suggestion', error);
+      }
+    };
+
     fetchStats();
+    fetchRLSuggestion();
+
+    // Refresh every 30 seconds
+    const interval = setInterval(() => {
+      fetchStats();
+      fetchRLSuggestion();
+    }, 30000);
 
     return () => {
       isMounted = false;
+      clearInterval(interval);
     };
   }, []);
 
@@ -60,6 +90,11 @@ const DashboardView: React.FC = () => {
 
   const totalDailyUsage = totalDailyUsageFromMock;
   const dailyCost = dailyCostFromMock;
+
+  // Merge AI recommendations with mock ones
+  const allRecommendations = useMemo(() => {
+    return [...aiRecommendations, ...recommendations];
+  }, [aiRecommendations, recommendations]);
 
   const summaryCards = useMemo(
     () => [
@@ -139,7 +174,7 @@ const DashboardView: React.FC = () => {
         {backendStats && (
           <div className="flex flex-wrap items-center justify-between gap-3 text-xs sm:text-sm text-gray-500 dark:text-gray-400">
             <p>
-              Backend live stats: {backendStats.device_count} device(s), avg temp {backendStats.avg_temperature.toFixed(1)}°C, avg humidity{' '}
+              Backend live stats: {backendStats.device_count} device(s), avg temp {backendStats.avg_temperature.toFixed(1)}C, avg humidity{' '}
               {backendStats.avg_humidity.toFixed(1)}%.
             </p>
             <p>
@@ -151,6 +186,16 @@ const DashboardView: React.FC = () => {
           <p className="text-xs sm:text-sm text-yellow-600 dark:text-yellow-400">
             {statsError}
           </p>
+        )}
+
+        {/* RL Agent Status */}
+        {rlSuggestion && rlSuggestion.current_state_summary && (
+          <div className="rounded border border-dashed border-cyan-500/30 bg-cyan-500/5 text-[9px] text-cyan-400 px-4 py-2 font-mono uppercase tracking-[0.15em] flex items-center gap-3">
+            <span className="flex-shrink-0">RL_AGENT</span>
+            <span>
+              EPISODES: {rlSuggestion.episodes_trained} | CONFIDENCE: {rlSuggestion.confidence} | PWR: {rlSuggestion.current_state_summary.total_power_watts.toFixed(0)}W | TEMP: {rlSuggestion.current_state_summary.avg_temperature.toFixed(1)}C
+            </span>
+          </div>
         )}
 
         {/* Demo mode banner */}
@@ -174,10 +219,10 @@ const DashboardView: React.FC = () => {
           <div className="space-y-8">
             <DeviceStatusList devices={devices} />
             <div className="pcb-card p-6">
-              <h3 className="text-xl font-semibold mb-4 text-white font-mono uppercase tracking-tighter">Savings <span className="text-emerald-500">Manual</span></h3>
+              <h3 className="text-xl font-semibold mb-4 text-white font-mono uppercase tracking-tighter">AI <span className="text-emerald-500">Recommendations</span></h3>
               <div className="space-y-4">
-                {recommendations.map((rec) => (
-                  <RecommendationCard key={rec.id} recommendation={rec} />
+                {allRecommendations.map((rec) => (
+                  <RecommendationCard key={rec.id} recommendation={rec} isAI={rec.id.startsWith('rl-')} />
                 ))}
               </div>
             </div>

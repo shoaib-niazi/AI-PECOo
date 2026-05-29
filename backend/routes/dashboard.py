@@ -63,7 +63,8 @@ async def get_recommendation(
     user_id: str = Depends(get_current_user)
 ):
     """
-    Get AI recommendation for device
+    Get AI recommendation for device.
+    Combines anomaly-based and RL-based suggestions.
     """
     db = get_db()
     device_service = DeviceService(db)
@@ -83,7 +84,7 @@ async def get_recommendation(
                 "estimated_savings": 0
             }
 
-        # Analyze with AI model
+        # Analyze with anomaly-based AI model
         model = EnergyModel(
             energy_price_per_unit=settings.ENERGY_PRICE_PER_UNIT,
             anomaly_threshold_sigma=settings.ANOMALY_THRESHOLD_SIGMA
@@ -94,13 +95,33 @@ async def get_recommendation(
 
         daily_cost = model.forecast_daily_cost(mean_power)
 
-        return {
+        # Get RL-based suggestion
+        rl_suggestion = None
+        try:
+            from services.ai_service import AIService
+            ai_service = AIService(db)
+            rl_suggestion = await ai_service.get_rl_suggestion(user_id)
+        except Exception:
+            pass
+
+        result = {
             **recommendation,
             "device_name": device["name"],
             "current_daily_cost": daily_cost,
             "all_readings_count": len(recent_data),
-            "anomaly_count": len(anomalies)
+            "anomaly_count": len(anomalies),
         }
+
+        if rl_suggestion:
+            result["rl_recommendation"] = {
+                "title": rl_suggestion.get("title", ""),
+                "description": rl_suggestion.get("description", ""),
+                "estimated_savings_pkr": rl_suggestion.get("estimated_savings_pkr", 0),
+                "confidence": rl_suggestion.get("confidence", "low"),
+                "source": "reinforcement_learning",
+            }
+
+        return result
 
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

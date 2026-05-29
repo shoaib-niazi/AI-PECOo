@@ -4,12 +4,9 @@
   "description": "AI-Powered Energy Consumption Optimizer",
   "scripts": {
     "build": "cd frontend && npm install && npm run build",
-    "dev": "npm i -g concurrently && concurrently \"npm run dev:frontend\" \"npm run dev:backend\"",
-    "dev:frontend": "cd frontend && npm run dev",
+    "dev": "cd frontend && npm run dev",
     "dev:backend": "cd backend && python main.py",
-    "install:all": "cd frontend && npm install && cd ../backend && pip install -r requirements.txt",
-    "docker:up": "docker-compose up --build",
-    "docker:down": "docker-compose down"
+    "install:all": "cd frontend && npm install && cd ../backend && pip install -r requirements.txt"
   },
   "engines": {
     "node": ">=18.0.0",

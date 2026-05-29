@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Header
 from database import get_db
 from services.energy_service import EnergyService
 from services.device_service import DeviceService
+from services.hardware_status import mark_hardware_active
 from ai.energy_model import EnergyModel
 from schemas import (
     EnergyDataCreate,
@@ -40,6 +41,9 @@ async def save_energy_data(
                 detail="Invalid or missing device API key",
             )
 
+    # Signal that real hardware is sending data → demo seeder will auto-pause
+    mark_hardware_active()
+
     db = get_db()
     energy_service = EnergyService(db)
     device_service = DeviceService(db)
@@ -72,6 +76,18 @@ async def save_energy_data(
                 f"Anomaly in {device['name']}: Power {anomalies[-1]['power']:.0f}W",
                 "warning"
             )
+
+        # Update RL agent with new reading (online learning)
+        try:
+            from services.ai_service import AIService
+            ai_service = AIService(db)
+            await ai_service.update_rl_from_reading(
+                data.device_id,
+                energy_data.get("power", 0),
+                energy_data.get("temperature", 25),
+            )
+        except Exception:
+            pass  # RL update is non-critical
 
         return {
             "id": str(energy_data["_id"]),
