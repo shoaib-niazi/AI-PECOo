@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: ai-peco-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DEMO_MODE
+        value: "true"
+      - key: MONGODB_URL
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: DATABASE_NAME
+        value: aipeco_db
+      - key: CORS_ORIGINS
+        sync: false
+      - key: ENABLE_AI_PREDICTIONS
+        value: "True"
+      - key: ENABLE_AUTO_ALERTS
+        value: "True"
+      - key: ENERGY_PRICE_PER_UNIT
+        value: "50"
+    healthCheckPath: /health
